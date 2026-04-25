@@ -18,9 +18,14 @@
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
 from sqlalchemy.exc import OperationalError
 
 from superset.app import AppRootMiddleware, create_app, SupersetApp
+from superset.constants import (
+    CHANGE_ME_SECRET_KEY,
+    SECRET_KEY_MIN_LENGTH,
+)
 from superset.initialization import SupersetAppInitializer
 
 
@@ -257,3 +262,110 @@ class TestCreateAppRoot:
 
         assert isinstance(app.wsgi_app, AppRootMiddleware)
         assert app.wsgi_app.app_root == "/from-param"
+
+
+def _make_initializer(
+    secret_key: str,
+    debug: bool = False,
+    testing: bool = False,
+) -> SupersetAppInitializer:
+    """Build a ``SupersetAppInitializer`` with a mocked Flask app."""
+    mock_app = MagicMock()
+    mock_app.debug = debug
+    mock_app.config = {"SECRET_KEY": secret_key, "TESTING": testing}
+    init = SupersetAppInitializer(mock_app)
+    init.config = mock_app.config
+    return init
+
+
+class TestCheckSecretKey:
+    """Tests for hardened SECRET_KEY validation (issue #5, CVE-2023-27524)."""
+
+    @patch("superset.initialization.is_test", return_value=False)
+    @patch("superset.initialization.logger")
+    def test_production_default_key_exits(
+        self, mock_logger: MagicMock, mock_is_test: MagicMock
+    ) -> None:
+        """Production with the upstream default key must exit."""
+        init = _make_initializer(CHANGE_ME_SECRET_KEY)
+        with pytest.raises(SystemExit):
+            init.check_secret_key()
+        mock_logger.error.assert_called_once()
+        assert "insecure SECRET_KEY" in mock_logger.error.call_args[0][0]
+
+    @patch("superset.initialization.is_test", return_value=False)
+    @patch("superset.initialization.logger")
+    def test_production_weak_key_exits(
+        self, mock_logger: MagicMock, mock_is_test: MagicMock
+    ) -> None:
+        """Production with a well-known weak key like 'secret' must exit."""
+        init = _make_initializer("secret")
+        with pytest.raises(SystemExit):
+            init.check_secret_key()
+        mock_logger.error.assert_called_once()
+
+    @patch("superset.initialization.is_test", return_value=False)
+    @patch("superset.initialization.logger")
+    def test_production_short_key_exits(
+        self, mock_logger: MagicMock, mock_is_test: MagicMock
+    ) -> None:
+        """Production with a key shorter than SECRET_KEY_MIN_LENGTH must exit."""
+        short_key = "a" * (SECRET_KEY_MIN_LENGTH - 1)
+        init = _make_initializer(short_key)
+        with pytest.raises(SystemExit):
+            init.check_secret_key()
+        mock_logger.error.assert_called_once()
+        assert "too short" in mock_logger.error.call_args[0][1]
+
+    @patch("superset.initialization.is_test", return_value=False)
+    @patch("superset.initialization.logger")
+    def test_production_strong_key_starts_normally(
+        self, mock_logger: MagicMock, mock_is_test: MagicMock
+    ) -> None:
+        """Production with a sufficiently long, non-weak key must not exit."""
+        strong_key = "x" * SECRET_KEY_MIN_LENGTH
+        init = _make_initializer(strong_key)
+        init.check_secret_key()  # should return without error
+        mock_logger.error.assert_not_called()
+
+    @patch("superset.initialization.is_test", return_value=False)
+    @patch("superset.initialization.logger")
+    def test_dev_weak_key_warns_only(
+        self, mock_logger: MagicMock, mock_is_test: MagicMock
+    ) -> None:
+        """Debug mode with a weak key must warn but not exit."""
+        init = _make_initializer("secret", debug=True)
+        init.check_secret_key()  # should not raise
+        mock_logger.warning.assert_called()
+        mock_logger.error.assert_not_called()
+
+    @patch("superset.initialization.is_test", return_value=False)
+    @patch("superset.initialization.logger")
+    def test_structured_log_emitted(
+        self, mock_logger: MagicMock, mock_is_test: MagicMock
+    ) -> None:
+        """A structured log with event_type must be emitted for weak keys."""
+        init = _make_initializer("secret", debug=True)
+        init.check_secret_key()
+        # Find the structured warning call with extra kwarg
+        structured_calls = [
+            c
+            for c in mock_logger.warning.call_args_list
+            if c.kwargs.get("extra", {}).get("event_type") == "insecure_secret_key"
+        ]
+        assert len(structured_calls) == 1
+        extra = structured_calls[0].kwargs["extra"]
+        assert extra["cve"] == "CVE-2023-27524"
+        assert extra["reason"] == "matches a known weak key"
+
+    @patch("superset.initialization.is_test", return_value=False)
+    @patch("superset.initialization.logger")
+    def test_remediation_hint_in_error(
+        self, mock_logger: MagicMock, mock_is_test: MagicMock
+    ) -> None:
+        """The error message must include the openssl remediation command."""
+        init = _make_initializer("secret")
+        with pytest.raises(SystemExit):
+            init.check_secret_key()
+        error_msg = " ".join(str(a) for a in mock_logger.error.call_args[0])
+        assert "openssl rand -hex 32" in error_msg
