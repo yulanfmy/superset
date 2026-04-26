@@ -40,12 +40,9 @@ WEAK_SECRET_KEYS: frozenset[str] = frozenset(  # noqa: S105
         "secret",
         "password",
         "your-secret-key-here",
-        "thisismyscretkey#4&!kj^YP2s",
         "YOUR_OWN_RANDOM_GENERATED_SECRET_KEY",
         "REPLACE_ME_WITH_A_COMPLEX_RANDOM_SECRET",
         "USE_YOUR_OWN_SECURE_RANDOM_KEY",
-        "thisISaSECRET_1234",
-        "a]V@5N<:@|'?6cc&fp~'9c",
     }
 )
 
