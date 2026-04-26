@@ -37,7 +37,10 @@ from flask_compress import Compress
 from flask_session import Session
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from superset.constants import CHANGE_ME_SECRET_KEY
+from superset.constants import (
+    SECRET_KEY_MIN_LENGTH,
+    WEAK_SECRET_KEYS,
+)
 from superset.databases.utils import make_url_safe
 from superset.extensions import (
     _event_logger,
@@ -626,33 +629,69 @@ class SupersetAppInitializer:  # pylint: disable=too-many-public-methods
         self.init_all_dependencies_and_extensions()
 
     def check_secret_key(self) -> None:
-        def log_default_secret_key_warning() -> None:
+        """Validate that SECRET_KEY is strong enough for production use.
+
+        Detection covers the upstream default, a curated weak-key list
+        (see ``superset.constants.WEAK_SECRET_KEYS``), and a minimum
+        length rule.  In dev/test mode a warning is emitted instead of
+        blocking startup.  Reference: CVE-2023-27524.
+        """
+
+        secret_key: str = self.config["SECRET_KEY"]
+        reason: str | None = None
+
+        if secret_key in WEAK_SECRET_KEYS:
+            reason = "matches a known weak key"
+        elif len(secret_key) < SECRET_KEY_MIN_LENGTH:
+            reason = (
+                f"too short ({len(secret_key)} chars, minimum {SECRET_KEY_MIN_LENGTH})"
+            )
+
+        if reason is None:
+            return
+
+        is_dev = (
+            self.superset_app.debug or self.superset_app.config["TESTING"] or is_test()
+        )
+
+        remediation = (
+            "Generate a strong key with:  openssl rand -hex 32\n"
+            "Then set SECRET_KEY in your superset_config.py.\n"
+            "For more info, see: https://superset.apache.org/docs/"
+            "configuration/configuring-superset#specifying-a-secret_key"
+        )
+
+        # Structured log consumable by SIEMs / log aggregators.
+        logger.warning(
+            "Weak SECRET_KEY detected",
+            extra={
+                "event_type": "insecure_secret_key",
+                "reason": reason,
+                "is_dev": is_dev,
+                "cve": "CVE-2023-27524",
+            },
+        )
+
+        if is_dev:
             top_banner = 80 * "-" + "\n" + 36 * " " + "WARNING\n" + 80 * "-"
             bottom_banner = 80 * "-" + "\n" + 80 * "-"
             logger.warning(top_banner)
             logger.warning(
-                "A Default SECRET_KEY was detected, please use superset_config.py "
-                "to override it.\n"
-                "Use a strong complex alphanumeric string and use a tool to help"
-                " you generate \n"
-                "a sufficiently random sequence, ex: openssl rand -base64 42 \n"
-                "For more info, see: https://superset.apache.org/docs/"
-                "configuration/configuring-superset#specifying-a-secret_key"
+                "A weak SECRET_KEY was detected (%s). "
+                "This is allowed in debug/test mode but must be "
+                "changed before deploying to production.\n%s",
+                reason,
+                remediation,
             )
             logger.warning(bottom_banner)
+            return
 
-        if self.config["SECRET_KEY"] == CHANGE_ME_SECRET_KEY:
-            if (
-                self.superset_app.debug
-                or self.superset_app.config["TESTING"]
-                or is_test()
-            ):
-                logger.warning("Debug mode identified with default secret key")
-                log_default_secret_key_warning()
-                return
-            log_default_secret_key_warning()
-            logger.error("Refusing to start due to insecure SECRET_KEY")
-            sys.exit(1)
+        logger.error(
+            "Refusing to start due to insecure SECRET_KEY (%s). %s",
+            reason,
+            remediation,
+        )
+        sys.exit(1)
 
     def configure_session(self) -> None:
         if self.config["SESSION_SERVER_SIDE"]:

@@ -29,6 +29,23 @@ EMPTY_STRING = "<empty string>"
 
 CHANGE_ME_SECRET_KEY = "CHANGE_ME_TO_A_COMPLEX_RANDOM_SECRET"  # noqa: S105
 
+# Minimum acceptable length for SECRET_KEY (in characters).
+SECRET_KEY_MIN_LENGTH = 32
+
+# Well-known weak keys that must never be used in production.
+# Reference: CVE-2023-27524
+WEAK_SECRET_KEYS: frozenset[str] = frozenset(  # noqa: S105
+    {
+        CHANGE_ME_SECRET_KEY,
+        "secret",
+        "password",
+        "your-secret-key-here",
+        "YOUR_OWN_RANDOM_GENERATED_SECRET_KEY",
+        "REPLACE_ME_WITH_A_COMPLEX_RANDOM_SECRET",
+        "USE_YOUR_OWN_SECURE_RANDOM_KEY",
+    }
+)
+
 # UUID for the examples database
 EXAMPLES_DB_UUID = "a2dc77af-e654-49bb-b321-40f6b559a1ee"
 
